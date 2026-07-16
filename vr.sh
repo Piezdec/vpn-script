@@ -406,8 +406,8 @@ VALUES (
     "target": "127.0.0.1:9443",
     "serverNames": ["$reality_domain"],
     "privateKey": "${private_key}",
-    "minClient": "",
-    "maxClient": "",
+    "minClientVer": "0",
+    "maxClientVer": "",
     "maxTimediff": 0,
     "shortIds": [
       "${shor[0]}","${shor[1]}","${shor[2]}","${shor[3]}",

@@ -112,7 +112,7 @@ done
 domain=$(echo "$domain" | tr -d '[:space:]')
 
 while [[ -z "$reality_domain" ]]; do
-    echo -en "Enter subdomain for REALITY / Nextcloud (e.g. s3cloud.cc): " && read reality_domain
+    echo -en "Enter domain for REALITY / Nextcloud (e.g. s3cloud.cc): " && read reality_domain
 done
 reality_domain=$(echo "$reality_domain" | tr -d '[:space:]')
 

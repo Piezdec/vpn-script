@@ -108,7 +108,7 @@ free_port() {
     local p
     while true; do
         p=$(( ((RANDOM<<15)|RANDOM) % 45000 + 20000 ))
-        ss -Hln "sport = :$p" 2>/dev/null | grep -q . || { echo "$p"; return; }
+        [[ -z "$(ss -Hln "sport = :$p" 2>/dev/null)" ]] && { echo "$p"; return; }
     done
 }
 
@@ -131,6 +131,8 @@ if [[ -n "$domain" ]]; then
     shopt -s nullglob
     for f in "$NGINX_SITES"/*; do
         [[ -f "$f" ]] || continue
+        # Ignore editor/dpkg leftovers and backups from earlier runs.
+        case "$f" in *.bak*|*.save|*.orig|*.dpkg-*|*.ucf-*|*~) continue;; esac
         grep -q 'listen 7443' "$f" 2>/dev/null || continue
         grep -qE "^[[:space:]]*server_name[[:space:]]+${esc}[[:space:]]*;" "$f" || continue
         vhost="$f"; break
@@ -144,6 +146,8 @@ if [[ -z "$vhost" ]]; then
     shopt -s nullglob
     for f in "$NGINX_SITES"/*; do
         [[ -f "$f" ]] || continue
+        # Ignore editor/dpkg leftovers and backups from earlier runs.
+        case "$f" in *.bak*|*.save|*.orig|*.dpkg-*|*.ucf-*|*~) continue;; esac
         if grep -q 'listen 7443' "$f" 2>/dev/null; then vhost="$f"; break; fi
     done
     shopt -u nullglob
@@ -253,7 +257,10 @@ EOF
 chmod 600 "$AGH_STATE"
 
 # ── service ───────────────────────────────────────────────────────────────────
-if systemctl list-unit-files --type=service 2>/dev/null | grep -q "^${AGH_SERVICE}\.service"; then
+# Test the unit file directly.  `... | grep -q` would exit on the first match,
+# send SIGPIPE upstream, and with `set -o pipefail` report the whole pipeline as
+# failed even though the service exists.
+if [[ -f "/etc/systemd/system/${AGH_SERVICE}.service" ]]; then
     blue "Restarting AdGuard Home..."
     systemctl restart "$AGH_SERVICE"
 else
@@ -271,7 +278,8 @@ done
     || die "AdGuard Home did not come up on 127.0.0.1:${web_port} — journalctl -u ${AGH_SERVICE}"
 
 # If it ignored the config it is now serving the setup wizard on the public IP.
-if ss -Hln 2>/dev/null | grep -qE '(0\.0\.0\.0|\[::\]):3000\b'; then
+listeners="$(ss -Hln 2>/dev/null || true)"
+if grep -qE '(0\.0\.0\.0|\[::\]):3000\b' <<< "$listeners"; then
     systemctl stop "$AGH_SERVICE" 2>/dev/null || true
     die "AdGuard Home bound 0.0.0.0:3000 — it did not read its config. Service stopped."
 fi
@@ -302,7 +310,14 @@ cat > "$AGH_SNIPPET" <<EOF
     # still have to be rewritten onto the sub-path.
     location /${admin_path}/ {
         proxy_pass http://127.0.0.1:${web_port}/;
-        proxy_redirect / /${admin_path}/;
+        # AdGuard Home answers / with a relative "Location: /login.html".
+        # Left alone, nginx expands that to an absolute URL and appends the
+        # port it listens on (7443), which is behind the SNI dispatcher and
+        # expects PROXY protocol — the browser cannot reach it.  Rewrite the
+        # Location explicitly and keep nginx from adding a port.
+        absolute_redirect off;
+        port_in_redirect off;
+        proxy_redirect / https://\$host/${admin_path}/;
         proxy_cookie_path / /${admin_path}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -322,7 +337,10 @@ if grep -q 'snippets/adguard.conf' "$vhost"; then
     blue "Include already present in ${vhost}"
 else
     blue "Adding the include to ${vhost}..."
-    backup="${vhost}.bak-$(date +%s)"
+    # Keep the backup OUT of sites-available: the scan above walks that
+    # directory, and a copy carrying the same listen/server_name lines could
+    # be picked as the vhost on a later run.
+    backup="${AGH_DIR}/$(basename "$vhost").bak-$(date +%s)"
     cp -a "$vhost" "$backup"
     tmp="$(mktemp)"
     # Insert right after server_name: always inside the server block, whatever
@@ -337,7 +355,7 @@ else
 fi
 
 blue "Testing nginx configuration..."
-if nginx -t 2>&1 | grep -q successful; then
+if nginx -t &>/dev/null; then
     systemctl reload nginx
     green "nginx reloaded."
 else
@@ -384,6 +402,9 @@ blue "Verifying the public DoH endpoint..."
 doh_status="$(curl -so /dev/null -w '%{http_code}' --max-time 10 \
     -H 'accept: application/dns-message' \
     "https://${domain}/${doh_path}/dns-query?${DNS_Q}" || true)"
+blue "Verifying the admin UI..."
+admin_status="$(curl -so /dev/null -w '%{http_code}' -L --max-time 15 \
+    "https://${domain}/${admin_path}/" || true)"
 blue "Verifying the standard path is NOT exposed..."
 leak_status="$(curl -so /dev/null -w '%{http_code}' --max-time 10 \
     -H 'accept: application/dns-message' \
@@ -408,6 +429,11 @@ if [[ "$doh_status" == "200" ]]; then
     green "  DoH endpoint:        HTTP 200 — working"
 else
     red   "  DoH endpoint:        HTTP ${doh_status} (expected 200)"
+fi
+if [[ "$admin_status" == "200" ]]; then
+    green "  Admin UI:            HTTP 200 — reachable"
+else
+    red   "  Admin UI:            HTTP ${admin_status} (expected 200)"
 fi
 if [[ "$leak_status" == "200" ]]; then
     red   "  Standard /dns-query: HTTP 200 — UNEXPECTED, it should not answer"

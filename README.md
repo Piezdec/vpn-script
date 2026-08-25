@@ -10,3 +10,7 @@ SERVER CORE OPTIMIZATION
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/piezdec/vpn-script/main/optimize.sh)
 ```
+AdGuardHOME DOH
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/piezdec/vpn-script/refs/heads/main/adh.sh)
+```
